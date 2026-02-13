@@ -22,6 +22,8 @@ class DatatableRaw
     protected $add_index = false;
     protected $index_label = 'no';
 
+    protected $order_map = [];//
+
     public function __construct($db = null)
     {
         $this->CI =& get_instance();
@@ -52,6 +54,11 @@ class DatatableRaw
     {
         $this->add_index = true;
         $this->index_label = $label;
+        return $this;
+    }
+
+    public function setOrderMap(array $map){
+        $this->order_map = $map;
         return $this;
     }
 
@@ -172,7 +179,9 @@ class DatatableRaw
             $col = $this->columns[$idx];
             if ($col === $this->index_label) continue;
 
-            $dbcol = $this->column_map[$col] ?? $col;
+            // $dbcol = $this->column_map[$col] ?? $col;
+            // $order[] = "$dbcol $dir";
+            $dbcol = $this->order_map[$col] ?? ($this->column_map[$col] ?? $col);
             $order[] = "$dbcol $dir";
         }
 
