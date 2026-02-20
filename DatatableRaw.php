@@ -1,6 +1,7 @@
 <?php
-//taruh di path application/libraries/
 defined('BASEPATH') OR exit('No direct script access allowed');
+
+//taruh di path application/libraries/DatatableRaw.php
 
 class DatatableRaw
 {
@@ -21,8 +22,6 @@ class DatatableRaw
 
     protected $add_index = false;
     protected $index_label = 'no';
-
-    protected $order_map = [];//
 
     public function __construct($db = null)
     {
@@ -54,11 +53,6 @@ class DatatableRaw
     {
         $this->add_index = true;
         $this->index_label = $label;
-        return $this;
-    }
-
-    public function setOrderMap(array $map){
-        $this->order_map = $map;
         return $this;
     }
 
@@ -94,12 +88,10 @@ class DatatableRaw
     {
         $value = trim($value);
 
-        // Nominal: 1.250.000 / 1,250,000 → 1250000
         if (preg_match('/^[\d.,]+$/', $value)) {
             return preg_replace('/[^\d]/', '', $value);
         }
 
-        // Tanggal: d/m/Y atau d-m-Y → Y-m-d
         if (preg_match('/^\d{2}[\/-]\d{2}[\/-]\d{4}$/', $value)) {
             $value = str_replace('-', '/', $value);
             [$d, $m, $y] = explode('/', $value);
@@ -109,11 +101,42 @@ class DatatableRaw
         return $value;
     }
 
+    /* ===================== CLEAN COLUMN (FIXED) ===================== */
+
+    protected function cleanColumn($col)
+    {
+        $col = trim($col);
+
+        if (stripos($col, ' AS ') !== false) {
+            $parts = preg_split('/\s+AS\s+/i', $col);
+            $col = $parts[0];
+        }
+
+        return trim($col);
+    }
+
+    /* ===================== SEARCH INJECTION (FIX GROUP BY BUG) ===================== */
+
+    protected function injectSearch($sql, $search)
+    {
+        if (!$search) return $sql;
+
+        if (stripos($sql, 'GROUP BY') !== false) {
+
+            [$before, $after] = preg_split('/GROUP BY/i', $sql, 2);
+
+            return $before . $search . ' GROUP BY ' . $after;
+        }
+
+        return $sql . $search;
+    }
+
     /* ===================== INTERNAL ===================== */
 
     protected function parseColumns()
     {
         $this->columns = [];
+
         if (!empty($_POST['columns'])) {
             foreach ($_POST['columns'] as $c) {
                 $this->columns[] = $c['data'] ?? null;
@@ -124,15 +147,27 @@ class DatatableRaw
     protected function buildSearch()
     {
         $search = trim($_POST['search']['value'] ?? '');
-        if ($search === '' || empty($this->columns)) return;
+
+        if ($search === '' || empty($_POST['columns'])) return;
 
         $search = $this->normalizeSearch($search);
 
         $likes = [];
-        foreach ($this->columns as $col) {
-            if (!$col || $col === $this->index_label) continue;
 
-            $dbcol = $this->column_map[$col] ?? $col;
+        foreach ($_POST['columns'] as $col) {
+
+            if (!filter_var($col['searchable'] ?? true, FILTER_VALIDATE_BOOLEAN)) {
+                continue;
+            }
+
+            $col_name = $col['data'] ?? null;
+
+            if (!$col_name || $col_name === $this->index_label) continue;
+
+            if (!isset($this->column_map[$col_name])) continue;
+
+            $dbcol = $this->cleanColumn($this->column_map[$col_name]);
+
             $likes[] = "CAST($dbcol AS CHAR) LIKE " .
                        $this->db->escape('%' . $search . '%');
         }
@@ -147,14 +182,19 @@ class DatatableRaw
         if (empty($_POST['columns'])) return;
 
         $likes = [];
+
         foreach ($_POST['columns'] as $col) {
+
             $col_name = $col['data'] ?? null;
             $search_value = trim($col['search']['value'] ?? '');
 
             if ($search_value === '' || $col_name === $this->index_label) continue;
 
             $search_value = $this->normalizeSearch($search_value);
-            $dbcol = $this->column_map[$col_name] ?? $col_name;
+
+            $dbcol = $this->cleanColumn(
+                $this->column_map[$col_name] ?? $col_name
+            );
 
             $likes[] = "CAST($dbcol AS CHAR) LIKE " .
                        $this->db->escape('%' . $search_value . '%');
@@ -170,18 +210,25 @@ class DatatableRaw
         if (empty($_POST['order']) || empty($this->columns)) return;
 
         $order = [];
+
         foreach ($_POST['order'] as $o) {
+
             $idx = (int)($o['column'] ?? 0);
             $dir = strtoupper($o['dir'] ?? 'ASC');
+
+            // Whitelist direction
+            $dir = ($dir === 'DESC') ? 'DESC' : 'ASC';
 
             if (!isset($this->columns[$idx])) continue;
 
             $col = $this->columns[$idx];
+
             if ($col === $this->index_label) continue;
 
-            // $dbcol = $this->column_map[$col] ?? $col;
-            // $order[] = "$dbcol $dir";
-            $dbcol = $this->order_map[$col] ?? ($this->column_map[$col] ?? $col);
+            $dbcol = $this->cleanColumn(
+                $this->column_map[$col] ?? $col
+            );
+
             $order[] = "$dbcol $dir";
         }
 
@@ -192,7 +239,7 @@ class DatatableRaw
 
     protected function buildLimit()
     {
-        $length = (int)($_POST['length'] ?? 10);
+        $length = (int)($_POST['length'] ?? -1);
         $start  = (int)($_POST['start'] ?? 0);
 
         if ($length > 0) {
@@ -212,6 +259,7 @@ class DatatableRaw
     public function generate()
     {
         try {
+
             $this->parseColumns();
             $this->buildSearch();
             $this->buildColumnSearch();
@@ -221,6 +269,7 @@ class DatatableRaw
             $base = rtrim($this->base_sql, ';');
             $base = $this->wrapWhere($base);
 
+            // Bersihkan ORDER & LIMIT bawaan
             $base_clean = preg_replace('/ORDER BY[\s\S]*$/i', '', $base);
             $base_clean = preg_replace('/\s+LIMIT\s+\d+(\s*,\s*\d+)?(\s+OFFSET\s+\d+)?/i', '', $base_clean);
 
@@ -228,7 +277,8 @@ class DatatableRaw
                 "SELECT COUNT(*) total FROM ($base_clean) x"
             )->row()->total ?? 0;
 
-            $filtered_sql = $base_clean . $this->search_sql;
+            // 🔥 FIX GROUP BY BUG
+            $filtered_sql = $this->injectSearch($base_clean, $this->search_sql);
 
             $filtered = $this->db->query(
                 "SELECT COUNT(*) total FROM ($filtered_sql) x"
@@ -242,6 +292,7 @@ class DatatableRaw
             $no = (int)($_POST['start'] ?? 0);
 
             foreach ($rows as $row) {
+
                 $no++;
 
                 foreach ($this->edit_columns as $c => $cb) {
@@ -279,7 +330,9 @@ class DatatableRaw
             ];
 
         } catch (\Throwable $e) {
+
             log_message('error', $e->getMessage());
+
             return [
                 'draw' => (int)($_POST['draw'] ?? 0),
                 'recordsTotal' => 0,
